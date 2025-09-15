@@ -13,13 +13,18 @@
 #     name: python3
 # ---
 
+# +
 import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 from scipy.signal import savgol_filter, find_peaks, correlate
 from scipy.stats import linregress
 from datetime import datetime
+
+import sys
+print(sys.executable)
 
 
 # +
@@ -90,7 +95,7 @@ def clean_gcd_data(file_path=None, df=None, time_col="Time/sec", voltage_col="Po
     return time_array, voltage_array
 
 # 2. Smooth voltage using Savitzky-Golay filter
-def plot_voltage_smoothing(time, voltage, window_length=11, polyorder=3, plot=False, title="Voltage Smoothing Preview"):
+def smooth_voltage(time, voltage, window_length=11, polyorder=3, plot=False, title="Voltage Smoothing Preview"):
     smoothed = savgol_filter(voltage, window_length=window_length, polyorder=polyorder)
 
     if plot:
@@ -107,39 +112,7 @@ def plot_voltage_smoothing(time, voltage, window_length=11, polyorder=3, plot=Fa
 
     return smoothed
 
-# 3. Detect peak indices (where slope changes from + to -)
-def detect_cycle_boundaries(smoothed_voltage, time, prominence=0.01, default_distance=30):
-    """
-    Automatically detect GCD cycle boundaries (peaks and valleys) without needing expected_cycles.
-    
-    Parameters:
-        smoothed_voltage (array): Smoothed voltage array
-        time (array): Time array (same length)
-        prominence (float): Peak prominence filter (how strong a peak needs to be)
-        default_distance (int): Fallback minimum spacing between peaks (in data points)
-
-    Returns:
-        np.ndarray: Sorted list of global peak/valley indices
-    """
-    # Estimate average distance between true cycles
-    dt = time[-1] - time[0]              # Total duration
-    dt_per_point = np.mean(np.diff(time))  # Sampling rate
-    total_points = len(time)
-
-    # Heuristic: use autocorrelation to guess peak spacing
-    from scipy.signal import correlate
-    corr = correlate(smoothed_voltage - np.mean(smoothed_voltage), smoothed_voltage - np.mean(smoothed_voltage), mode='full')
-    corr = corr[len(corr)//2:]
-    corr_peak = np.argmax(corr[default_distance:]) + default_distance  # skip first region
-    estimated_distance = max(corr_peak, default_distance)
-
-    # Find peaks
-    peaks, _ = find_peaks(smoothed_voltage, prominence=prominence, distance=estimated_distance)
-    valleys, _ = find_peaks(-smoothed_voltage, prominence=prominence, distance=estimated_distance)
-
-    return np.sort(np.concatenate([peaks, valleys]))
-
-def detect_cycle_peaks_and_valleys(smoothed_voltage, time, prominence=0.01, default_distance=30):
+def detect_cycle_peaks_and_valleys(smoothed_voltage, time, prominence=0.01, default_distance=30, plot=False):
     """
     Detect both peaks and valleys from a smoothed GCD voltage signal.
 
@@ -150,7 +123,8 @@ def detect_cycle_peaks_and_valleys(smoothed_voltage, time, prominence=0.01, defa
         default_distance (int): Fallback minimum spacing between extrema (in data points)
 
     Returns:
-        np.ndarray: Sorted array of extrema indices (including both peaks and valleys)
+        peaks (np.ndarray): Indices of peak points (charging ends)
+        valleys (np.ndarray): Indices of valley points (discharging ends)
     """
     # Estimate average spacing between cycles using autocorrelation
     voltage_zero_mean = smoothed_voltage - np.mean(smoothed_voltage)
@@ -164,11 +138,19 @@ def detect_cycle_peaks_and_valleys(smoothed_voltage, time, prominence=0.01, defa
     # Detect peaks and valleys using scipy's find_peaks
     peaks, _ = find_peaks(smoothed_voltage, prominence=prominence, distance=estimated_distance)
     valleys, _ = find_peaks(-smoothed_voltage, prominence=prominence, distance=estimated_distance)
+    
+    print(f"✅ Detected {len(peaks)} peaks and {len(valleys)} valleys")
 
-    # Combine and sort
-    extrema_indices = np.sort(np.concatenate([peaks, valleys]))
-
-    return extrema_indices
+    # Optional: estimate how many full cycles (peak → valley)
+    estimated_pairs = sum(1 for p in peaks if any(v > p for v in valleys))
+    print(f"📊 Estimated usable peak–valley pairs (cycles): {estimated_pairs}")
+    
+    # Optional plot
+    if plot:
+        peak_valley_indices = np.sort(np.concatenate([peaks, valleys]))
+        plot_detected_boundaries(time, smoothed_voltage, peak_valley_indices, title="Detected Peaks and Valleys")
+    
+    return peaks, valleys
 
 def match_peak_valley_pairs(peaks, valleys):
     """
@@ -213,57 +195,83 @@ def plot_detected_boundaries(time, voltage, peak_indices, title="Detected Cycle 
     plt.tight_layout()
     plt.show()
 
+def plot_discharge_debug(t_seg, v_seg, t_fit, slope, intercept, cycle_id, issue_type, r2=None):
+    """
+    Plots a debug view of a discharge segment with a bad fit.
+    
+    Args:
+        t_seg: Full discharge time segment (peak to valley)
+        v_seg: Full voltage segment
+        t_fit: Portion used for linear fitting
+        slope: Fitted slope
+        intercept: Fitted intercept
+        cycle_id: Cycle number (1-based)
+        issue_type: "invalid_slope" or "poor_fit"
+        r2: Optional R² value for annotation
+    """
+    plt.figure(figsize=(6, 3))
+    plt.plot(t_seg, v_seg, label="Discharge Segment")
 
-# 4. Compute capacitance per cycle
+    if t_fit is not None and slope is not None:
+        plt.plot(t_fit, intercept + slope * t_fit, '--', label="Linear Fit")
+
+    title = f"⚠️ Cycle {cycle_id} — "
+    if issue_type == "invalid_slope":
+        title += "Invalid Slope (≥ 0)"
+    elif issue_type == "poor_fit":
+        title += f"Poor Fit (R²={r2:.2f})" if r2 is not None else "Poor Fit"
+
+    plt.title(title)
+    plt.xlabel("Time (s)")
+    plt.ylabel("Voltage (V)")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 def compute_capacitance_from_peak_valley_pairs(
     time, voltage, peak_valley_pairs, current,
-    r2_threshold=0.5, window_fit=False, window_size=5,
-    debug_plot=False
+    plot_good=False
 ):
     capacitance_values = []
+    r2_values = []
     cycle_ids = []
 
     for i, (p_idx, v_idx) in enumerate(peak_valley_pairs):
         t_seg = time[p_idx:v_idx+1]
         v_seg = voltage[p_idx:v_idx+1]
 
+        # Skip if too short or time not increasing
         if len(t_seg) < 3 or not np.all(np.diff(t_seg) > 0):
             print(f"⚠️ Cycle {i+1}: segment too short or time not increasing")
             continue
 
-        if window_fit:
-            # Fit around steepest part
-            dv = np.diff(v_seg)
-            dt = np.diff(t_seg)
-            slope_seg = np.divide(dv, dt, out=np.zeros_like(dv), where=dt != 0)
-            steepest = np.argmin(slope_seg)
-            start_idx = max(steepest - window_size // 2, 0)
-            end_idx = min(steepest + window_size // 2 + 1, len(t_seg))
-            t_fit = t_seg[start_idx:end_idx]
-            v_fit = v_seg[start_idx:end_idx]
-        else:
-            t_fit = t_seg
-            v_fit = v_seg
+        # Fit slope using polyfit
+        slope, intercept = np.polyfit(t_seg, v_seg, 1)
 
-        # Linear fit
-        slope, intercept, r_value, _, _ = linregress(t_fit, v_fit)
+        # Calculate R² manually (for info only, not filtering)
+        pred = intercept + slope * t_seg
+        ss_res = np.sum((v_seg - pred) ** 2)
+        ss_tot = np.sum((v_seg - np.mean(v_seg)) ** 2)
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 1.0
 
+        # Only accept if slope is negative (discharge)
         if slope >= 0:
             print(f"⚠️ Cycle {i+1}: slope not negative (slope={slope:.4f})")
             continue
-        if r_value**2 < r2_threshold:
-            print(f"⚠️ Cycle {i+1}: poor fit (R²={r_value**2:.3f})")
-            continue
 
+        # Calculate capacitance
         C = current / abs(slope)
+
         capacitance_values.append(C)
+        r2_values.append(r2)
         cycle_ids.append(i + 1)
 
-        if debug_plot:
-            import matplotlib.pyplot as plt
+        # Optional plot
+        if plot_good:
             plt.figure(figsize=(6, 3))
             plt.plot(t_seg, v_seg, label="Discharge Segment")
-            plt.plot(t_fit, intercept + slope * t_fit, '--', label=f"Fit: C={C:.2f}F, R²={r_value**2:.2f}")
+            plt.plot(t_seg, pred, '--', label=f"Fit: C={C:.2f}F, R²={r2:.2f}")
             plt.title(f"Cycle {i+1}")
             plt.xlabel("Time (s)")
             plt.ylabel("Voltage (V)")
@@ -274,71 +282,64 @@ def compute_capacitance_from_peak_valley_pairs(
 
     return pd.DataFrame({
         "cycle": cycle_ids,
-        "capacitance_F": capacitance_values
+        "capacitance_F": capacitance_values,
+        "r2": r2_values
     })
-
-def compute_capacitance_per_cycle(time, voltage, peak_indices, current, r2_threshold=0.90, debug_plot=False):
-    """
-    Computes capacitance per cycle using linear regression on the discharge segment.
     
-    Parameters:
-        time (array): Time values (1D)
-        voltage (array): Smoothed voltage values (1D)
-        peak_indices (list or array): List of peak indices defining cycle boundaries
-        current (float): Applied current in amperes
-        r2_threshold (float): Minimum R² value for accepting a linear fit
-        debug_plot (bool): If True, show per-cycle debug plots
-        
-    Returns:
-        pd.DataFrame with columns: cycle, capacitance_F
-    """
-    
-    capacitance_values = []
-    cycle_ids = []
+# def compute_capacitance_from_peak_valley_pairs(
+#     time, voltage, peak_valley_pairs, current,
+#     r2_threshold=0.5, window_size=5, plot_good=False,
+#     debug_plot=False
+# ):
+#     capacitance_values = []
+#     cycle_ids = []
 
-    for i in range(len(peak_indices) - 1):
-        start = peak_indices[i]
-        end = peak_indices[i + 1]
-        
-        t_seg = np.asarray(time[start:end])
-        v_seg = np.asarray(voltage[start:end])
-        
-        # Sanity check
-        if len(t_seg) < 3 or not np.all(np.diff(t_seg) > 0):
-            print(f"⚠️ Skipping cycle {i + 1}: segment too short or non-monotonic time")
-            continue
-            
-        # Compute per-segment slope via linear regression
-        slope, intercept, r_value, p_value, std_err = linregress(t_seg, v_seg)
+#     for i, (p_idx, v_idx) in enumerate(peak_valley_pairs):
+#         t_seg = time[p_idx:v_idx+1]
+#         v_seg = voltage[p_idx:v_idx+1]
 
-        if slope >= 0:
-#             print(f"⚠️ Skipping cycle {i + 1}: positive slope (not discharge)")
-            continue
+#         if len(t_seg) < 3 or not np.all(np.diff(t_seg) > 0):
+#             print(f"⚠️ Cycle {i+1}: segment too short or time not increasing")
+#             continue
 
-        if r_value**2 < r2_threshold:
-            print(f"⚠️ Skipping cycle {i + 1}: poor linear fit (R²={r_value**2:.3f})")
-            continue
+#         t_fit = t_seg
+#         v_fit = v_seg
 
-        C = current / abs(slope)
-        capacitance_values.append(C)
-        cycle_ids.append(i + 1)
-        
-        if debug_plot:
-            plt.figure(figsize=(6, 3))
-            plt.plot(t_seg, v_seg, label="Discharge segment", marker='o', linewidth=1.5)
-            plt.plot(t_seg, intercept + slope * t_seg, label=f"Fit (R²={r_value**2:.3f})", linestyle='--')
-            plt.title(f"Cycle {i + 1} — Capacitance: {C:.2f} F")
-            plt.xlabel("Time (s)")
-            plt.ylabel("Voltage (V)")
-            plt.grid(True)
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
+#         # Linear fit
+#         slope, intercept, r_value, _, _ = linregress(t_fit, v_fit)
 
-    return pd.DataFrame({
-        "cycle": cycle_ids,
-        "capacitance_F": capacitance_values
-    })
+#         if slope >= 0:
+#             print(f"⚠️ Cycle {i+1}: slope not negative (slope={slope:.4f})")
+#             if debug_plot:
+#                 plot_discharge_debug(t_seg, v_seg, t_fit, slope, intercept, i + 1, issue_type="invalid_slope")
+#             continue
+
+#         if r_value**2 < r2_threshold:
+#             print(f"⚠️ Cycle {i+1}: poor fit (R²={r_value**2:.3f})")
+#             if debug_plot:
+#                 plot_discharge_debug(t_seg, v_seg, t_fit, slope, intercept, i + 1, issue_type="poor_fit", r2=r_value**2)
+#             continue
+
+#         C = current / abs(slope)
+#         capacitance_values.append(C)
+#         cycle_ids.append(i + 1)
+
+#         if plot_good:
+#             plt.figure(figsize=(6, 3))
+#             plt.plot(t_seg, v_seg, label="Discharge Segment")
+#             plt.plot(t_fit, intercept + slope * t_fit, '--', label=f"Fit: C={C:.2f}F, R²={r_value**2:.2f}")
+#             plt.title(f"Cycle {i+1}")
+#             plt.xlabel("Time (s)")
+#             plt.ylabel("Voltage (V)")
+#             plt.legend()
+#             plt.grid(True)
+#             plt.tight_layout()
+#             plt.show()
+
+#     return pd.DataFrame({
+#         "cycle": cycle_ids,
+#         "capacitance_F": capacitance_values
+#     })
 
 # 5. Optional: plot capacitance vs cycle
 def plot_capacitance_vs_cycle(cap_df, y_min=None, y_max=None):
@@ -379,8 +380,8 @@ def plot_retention_vs_cycle(cap_df):
     plt.show()
 
 ### Wrapper Function ###
-def analyze_gcd(filepath, output_path, current, y_min=400, y_max=800, smooth_window=11, poly_order=3,
-                debug_plot=False):
+def analyze_gcd(filepath, output_path, current, y_min=400, y_max=800, plot_raw=True, plot_good=False, debug_plot=False,
+                smooth_window=11, poly_order=3):
     """
     Full GCD analysis pipeline with robust cycle detection and capacitance calculation.
 
@@ -396,37 +397,43 @@ def analyze_gcd(filepath, output_path, current, y_min=400, y_max=800, smooth_win
     """
     # 1. Load and smooth
     time, voltage = load_voltage_data(filepath)
-    smoothed_voltage = plot_voltage_smoothing(time, voltage, window_length=11, polyorder=3, plot=False)
+    
+    if plot_raw:
+        plt.figure(figsize=(8, 4))
+        plt.plot(time, voltage, label="Raw Voltage")
+        plt.title("Raw GCD Data")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Voltage (V)")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+    
+#     smoothed_voltage = smooth_voltage(time, voltage, window_length=11, polyorder=3, plot=False)
     
     # 2. Detect peaks + valleys as cycle boundaries
-#     cycle_boundaries = detect_cycle_boundaries(
-#         smoothed_voltage, time,
-#         prominence=0.01
-#     )
-#     plot_detected_boundaries(time, smoothed_voltage, cycle_boundaries)
-    peaks, valleys = detect_cycle_peaks_and_valleys(smoothed_voltage, time)
+    peaks, valleys = detect_cycle_peaks_and_valleys(voltage, time, plot=True)
     peak_valley_pairs = match_peak_valley_pairs(peaks, valleys)
 
-    # 3. Compute capacitance per cycle
-#     cap_df = compute_capacitance_per_cycle(
-#         time, smoothed_voltage, cycle_boundaries, current,
-#         debug_plot=debug_plot
-#     )
+    # 3. Compute capacitance
     cap_df = compute_capacitance_from_peak_valley_pairs(
-        time, smoothed_voltage, peak_valley_pairs, current,
-        window_fit=True, debug_plot=True
+        time, voltage, peak_valley_pairs, current, plot_good=plot_good
     )
-    
-#     cap_df = compute_capacitance_per_cycle(time, smoothed_voltage, peaks, current, debug_plot=True)
-    
-    # Add retention % to the results
+        
+    # 4. Add retention % to the results
     cap_df["retention_pct"] = 100 * cap_df["capacitance_F"] / cap_df["capacitance_F"].iloc[0]
     
+    # 5. Build output filename based on input name
+    base_name = os.path.splitext(os.path.basename(filepath))[0]
     timestamp = datetime.now().strftime("%Y%m%d")
-    filename = f"capacitance_results_{timestamp}.csv"
+    filename = f"{base_name}_capacitance_{timestamp}.csv"
     output_file_path = os.path.join(output_path, filename)
+    
+    # 6. Save results
     cap_df.to_csv(output_file_path, index=False)
-
+    print(f"✅ Saved results to {output_file_path}")
+    
+    # 7. Plot results
     plot_capacitance_vs_cycle(cap_df, y_min, y_max)
     plot_retention_vs_cycle(cap_df)
     
