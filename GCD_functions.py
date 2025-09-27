@@ -8,7 +8,7 @@
 #       format_version: '1.5'
 #       jupytext_version: 1.17.1
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -36,6 +36,8 @@ def load_voltage_data(filepath):
     - Finds the line with 'Time/sec'
     - Cleans and averages duplicate timestamps
     """
+    ext = os.path.splitext(filepath)[-1].lower()
+    
     # Step 1: Find header line index
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -50,47 +52,88 @@ def load_voltage_data(filepath):
         raise ValueError("🛑 Could not find a valid data header (e.g. 'Time/sec, Potential/V')")
 
     # Step 2: Read from header line
-    df = pd.read_csv(
-        filepath,
-        skiprows=header_line,
-        sep=r"[\s,]+",  # support space, tab, or comma
-        engine="python",
-        names=["Time/sec", "Potential/V"]
-    )
+    if ext == ".csv":
+        # Already proper columns
+        df = pd.read_csv(filepath, skiprows=header_line, engine="python")
+    else:  # .txt
+        # Data is comma-separated but not split into columns
+        df = pd.read_csv(
+            filepath,
+            skiprows=header_line,
+            sep=",",  # force split at commas
+            engine="python",
+            names=["Time/sec", "Potential/V"]
+        )
 
     # Step 3: Clean duplicate timestamps
-    time, voltage = clean_gcd_data(df=df)
+    time, voltage = clean_gcd_data(file_path=None, df=df, time_col="Time/sec", voltage_col="Potential/V", mode="preserve")
     return time, voltage
 
-def clean_gcd_data(file_path=None, df=None, time_col="Time/sec", voltage_col="Potential/V"):
+def clean_gcd_data(file_path=None, df=None, time_col="Time/sec", voltage_col="Potential/V", mode="preserve"):
     """
     Cleans GCD data by:
     - Reading from file or using given DataFrame
     - Removing non-numeric entries
-    - Averaging voltage values for duplicate timestamps
-    - Returning clean time and voltage arrays
+    - Handling duplicate timestamps based on `mode`
+
+    Parameters
+    ----------
+    df : pd.DataFrame, optional
+        Input dataframe with GCD data.
+    file_path : str, optional
+        Path to file if df is not provided.
+    time_col : str
+        Column name for time.
+    voltage_col : str
+        Column name for voltage.
+    mode : str, default="preserve"
+        How to handle duplicate timestamps:
+        - "preserve": keep all duplicates (no averaging) ✅ recommended for GCD
+        - "average": average duplicates
+        - "median": take median of duplicates
+        - "first": take first occurrence
+        - "last": take last occurrence
     """
     # Step 1: Load
-    if file_path:
+    if df is None and file_path:
         df = pd.read_csv(
             file_path,
-            sep=r"\s+", engine="python", comment="#",
-            names=[time_col, voltage_col], header=0
+            sep=r"[\s,]+", engine="python", comment="#"
         )
-    
     if df is None:
         raise ValueError("Either file_path or df must be provided.")
+    
+    # if file_path:
+    #     df = pd.read_csv(
+    #         file_path,
+    #         sep=r"\s+", engine="python", comment="#",
+    #         names=[time_col, voltage_col], header=0
+    #     )
+    
+    # if df is None:
+    #     raise ValueError("Either file_path or df must be provided.")
 
     # Step 2: Coerce to numeric
     df = df[[time_col, voltage_col]].apply(pd.to_numeric, errors="coerce")
     df = df.dropna().reset_index(drop=True)
 
     # Step 3: Group by duplicate timestamps and average
-    grouped = df.groupby(time_col, as_index=False).mean()
+    if mode == "preserve":
+        cleaned = df  # keep all duplicates
+    elif mode == "average":
+        cleaned = df.groupby(time_col, as_index=False).mean()
+    elif mode == "median":
+        cleaned = df.groupby(time_col, as_index=False).median()
+    elif mode == "first":
+        cleaned = df.groupby(time_col, as_index=False).first()
+    elif mode == "last":
+        cleaned = df.groupby(time_col, as_index=False).last()
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
 
     # Step 4: Return cleaned arrays
-    time_array = grouped[time_col].values
-    voltage_array = grouped[voltage_col].values
+    time_array = cleaned[time_col].values
+    voltage_array = cleaned[voltage_col].values
 
     return time_array, voltage_array
 
