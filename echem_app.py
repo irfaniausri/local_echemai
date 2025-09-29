@@ -100,7 +100,7 @@ if  user_name and uploaded_files:
 
 # --- Step 3: Hidden Admin Section ---
 query_params = st.query_params
-if query_params.get("admin") == ["1"]:  # Only visible with ?admin=1 in URL
+if query_params.get("admin") == "1":  # Only visible with ?admin=1 in URL
     st.subheader("Admin Section")
     if st.checkbox("📥 Show usage logs"):
         logs = get_logs()
