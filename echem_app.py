@@ -30,24 +30,18 @@ if project_root not in sys.path:
 
 from local_echemai import GCD_functions as functions
 
-
 # +
 # --- Shared log storage ---
-@st.cache_data(ttl=None)
+if "usage_logs" not in st.session_state:
+    st.session_state["usage_logs"] = []  # shared per server session
+
 def get_logs():
-    """Return the shared usage logs (list of lists)."""
-    return []
+    return st.session_state["usage_logs"]
 
 def log_usage(user, file_name, status):
-    """Append a new log entry to the shared logs."""
-    logs = get_logs()
-    logs.append([datetime.now().isoformat(), user, file_name, status])
-    update_logs(logs)
-
-def update_logs(new_logs):
-    """Overwrite the shared logs in cache with a new list."""
-    get_logs.clear()         # clear only this cached function
-    get_logs.set(new_logs)   # save updated logs
+    st.session_state["usage_logs"].append(
+        [datetime.now().isoformat(), user, file_name, status]
+    )
 
 
 # +
