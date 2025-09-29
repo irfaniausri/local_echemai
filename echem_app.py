@@ -47,7 +47,7 @@ if  user_name and uploaded_files:
                                             mode="app", plot_base_data=True, plot_debug=False)
 
             # ✅ Log success
-            log_usage(user_name, uploaded_file.name, "success")
+            log.log_usage(user_name, uploaded_file.name, "success")
 
             # --- Package results into ZIP ---
             zip_buffer = io.BytesIO()
@@ -82,7 +82,7 @@ if  user_name and uploaded_files:
             
         except Exception as e:
             st.error(f"❌ Failed {uploaded_file.name}: {e}")
-            log_usage(user_name, uploaded_file.name, f"failed: {e}")
+            log.log_usage(user_name, uploaded_file.name, f"failed: {e}")
 
 # --- Step 3: Hidden Admin Section ---
 query_params = st.experimental_get_query_params()
