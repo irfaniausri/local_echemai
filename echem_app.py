@@ -99,7 +99,7 @@ if  user_name and uploaded_files:
             log_usage(user_name, uploaded_file.name, f"failed: {e}")
 
 # --- Step 3: Hidden Admin Section ---
-query_params = st.experimental_get_query_params()
+query_params = st.query_params()
 if query_params.get("admin") == ["1"]:  # Only visible with ?admin=1 in URL
     st.subheader("Admin Section")
     if st.checkbox("📥 Show usage logs"):

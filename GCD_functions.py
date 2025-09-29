@@ -399,28 +399,14 @@ def analyze_gcd(input_data, current, output_path=None, base_name=None,
     """
     # Handle UploadedFile
     if hasattr(input_data, "read"):  # Streamlit UploadedFile
-        # Reset buffer (important if already read before)
-        input_data.seek(0)
         ext = os.path.splitext(input_data.name)[-1].lower()
-        if ext == ".csv":
-            df = pd.read_csv(input_data)
-        else:
-            input_data.seek(0)
-            lines = input_data.readlines()
-            header_line = next(
-                (i for i, l in enumerate(lines) if b"Time" in l or b"Potential" in l),
-                0
-            )
-            # reset pointer
-            input_data.seek(0)
-            df = pd.read_csv(
-                input_data,
-                skiprows=header_line,
-                sep=",",
-                engine="python",
-                names=["Time/sec", "Potential/V"]
-            )
-            # df = pd.read_csv(input_data, sep=",", names=["Time/sec", "Potential/V"])
+
+        # Write UploadedFile to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(input_data.read())
+            tmp_path = tmp.name
+
+        df = load_voltage_data(tmp_path)   # ✅ reuse your notebook function
         if base_name is None:
             base_name = os.path.splitext(input_data.name)[0]
 
