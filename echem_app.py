@@ -27,8 +27,8 @@ project_root = os.path.abspath(os.path.join(notebook_dir, ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from Codes.local_echemai import GCD_functions as functions
-from Codes.local_echemai import log_utils as log
+from local_echemai import GCD_functions as functions
+from local_echemai import log_utils as log
 
 # +
 st.title("🧪 GCD Processor")
