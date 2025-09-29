@@ -405,7 +405,22 @@ def analyze_gcd(input_data, current, output_path=None, base_name=None,
         if ext == ".csv":
             df = pd.read_csv(input_data)
         else:
-            df = pd.read_csv(input_data, sep=",", names=["Time/sec", "Potential/V"])
+            input_data.seek(0)
+            lines = input_data.readlines()
+            header_line = next(
+                (i for i, l in enumerate(lines) if b"Time" in l or b"Potential" in l),
+                0
+            )
+            # reset pointer
+            input_data.seek(0)
+            df = pd.read_csv(
+                input_data,
+                skiprows=header_line,
+                sep=",",
+                engine="python",
+                names=["Time/sec", "Potential/V"]
+            )
+            # df = pd.read_csv(input_data, sep=",", names=["Time/sec", "Potential/V"])
         if base_name is None:
             base_name = os.path.splitext(input_data.name)[0]
 
@@ -418,14 +433,6 @@ def analyze_gcd(input_data, current, output_path=None, base_name=None,
     # Handle DataFrame
     else:
         df = input_data
-    
-    # # Load if filepath is given
-    # if isinstance(input_data, str):
-    #     df = load_voltage_data(input_data)
-    #     if base_name is None:
-    #         base_name = os.path.splitext(os.path.basename(input_data))[0]
-    # else:
-    #     df = input_data 
 
     # Run the core pipeline
     results = analyze_gcd_core(df, current, plot_base_data=plot_base_data, plot_debug=plot_debug)
