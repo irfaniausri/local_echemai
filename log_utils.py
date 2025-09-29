@@ -13,29 +13,25 @@
 #     name: dp-app
 # ---
 
-import csv
+import pandas as pd
 from datetime import datetime
-import os
+import streamlit as st
 
 # +
 LOG_FILE = "GCDapp_usage_log.csv"
 
-def log_usage(user_name: str, filename: str, status: str):
-    """
-    Append a log entry to usage_log.csv
-    
-    Args:
-        user_name (str): Name entered by the user
-        filename (str): Name of file processed
-        status (str): "success" or error message
-    """
-    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True) if os.path.dirname(LOG_FILE) else None
+# --- Cached logs store ---
+@st.cache_data(ttl=None)
+def get_logs():
+    # start with empty list
+    return []
 
-    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            datetime.utcnow().isoformat(),
-            user_name,
-            filename,
-            status
-        ])
+def log_usage(user: str, file_name: str, status: str):
+    logs = get_logs()
+    logs.append([datetime.now().isoformat(), user, file_name, status])
+    # Update cache
+    st.cache_data.clear()  # clear to allow refresh
+    @st.cache_data(ttl=None)
+    def get_logs():
+        return logs
+    return logs

@@ -17,6 +17,7 @@
 import streamlit as st
 import pandas as pd
 import os, sys, io, zipfile
+from datetime import datetime
 
 # Get base dir of current notebook
 this_file = __file__ if "__file__" in globals() else os.path.abspath("")
@@ -28,7 +29,26 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from local_echemai import GCD_functions as functions
-from local_echemai import log_utils as log
+
+
+# +
+# --- Shared log storage ---
+@st.cache_data(ttl=None)
+def get_logs():
+    """Return the shared usage logs (list of lists)."""
+    return []
+
+def log_usage(user, file_name, status):
+    """Append a new log entry to the shared logs."""
+    logs = get_logs()
+    logs.append([datetime.now().isoformat(), user, file_name, status])
+    update_logs(logs)
+
+def update_logs(new_logs):
+    """Overwrite the shared logs in cache with a new list."""
+    get_logs.clear()         # clear only this cached function
+    get_logs.set(new_logs)   # save updated logs
+
 
 # +
 st.title("🧪 GCD Processor")
@@ -47,7 +67,7 @@ if  user_name and uploaded_files:
                                             mode="app", plot_base_data=True, plot_debug=False)
 
             # ✅ Log success
-            log.log_usage(user_name, uploaded_file.name, "success")
+            log_usage(user_name, uploaded_file.name, "success")
 
             # --- Package results into ZIP ---
             zip_buffer = io.BytesIO()
@@ -82,15 +102,16 @@ if  user_name and uploaded_files:
             
         except Exception as e:
             st.error(f"❌ Failed {uploaded_file.name}: {e}")
-            log.log_usage(user_name, uploaded_file.name, f"failed: {e}")
+            log_usage(user_name, uploaded_file.name, f"failed: {e}")
 
 # --- Step 3: Hidden Admin Section ---
 query_params = st.experimental_get_query_params()
-if query_params.get("admin") == ["1"]:  # Only visible in ?admin=1 link
+if query_params.get("admin") == ["1"]:  # Only visible with ?admin=1 in URL
     st.subheader("Admin Section")
     if st.checkbox("📥 Show usage logs"):
-        try:
-            df = pd.read_csv("usage_log.csv", names=["timestamp", "user", "file", "status"])
+        logs = get_logs()
+        if logs:
+            df = pd.DataFrame(logs, columns=["timestamp", "user", "file", "status"])
             st.dataframe(df)
             st.download_button(
                 "Download logs.csv",
@@ -98,5 +119,5 @@ if query_params.get("admin") == ["1"]:  # Only visible in ?admin=1 link
                 "usage_log.csv",
                 mime="text/csv"
             )
-        except FileNotFoundError:
+        else:
             st.write("No logs yet.")
