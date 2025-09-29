@@ -18,6 +18,7 @@ import streamlit as st
 import pandas as pd
 import os, sys, io, zipfile
 from datetime import datetime
+import tempfile
 
 # Get base dir of current notebook
 this_file = __file__ if "__file__" in globals() else os.path.abspath("")
